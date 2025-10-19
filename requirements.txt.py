@@ -1,0 +1,9 @@
+﻿streamlit
+pandas
+python-dateutil
+pillow
+pypdf
+pypdfium2
+mistralai
+langextract[openai]
+xlsxwriter
