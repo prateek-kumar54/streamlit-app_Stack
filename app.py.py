@@ -5,6 +5,9 @@
 # - API keys are entered by the user at runtime (not stored on disk)
 
 import os, re, json, base64
+import importlib
+import subprocess
+import sys
 from io import BytesIO
 from datetime import datetime
 
@@ -114,6 +117,41 @@ def show_popup_info(msg, *, title="Info"):
       </div>
     </div>
     """, height=140, scrolling=False)
+
+
+def ensure_runtime_dependencies(dependency_spec):
+    """Attempt to import dependencies, installing them on-demand if missing.
+
+    Parameters
+    ----------
+    dependency_spec: Iterable[Tuple[str, str]]
+        Sequence of (pip_package, import_name) entries.
+
+    Returns
+    -------
+    Set[str]
+        Any package names that could not be imported after installation.
+    """
+
+    missing = []
+    for pip_name, import_name in dependency_spec:
+        try:
+            importlib.import_module(import_name)
+        except Exception:
+            missing.append((pip_name, import_name))
+
+    if not missing:
+        return set()
+
+    with st.spinner("Installing missing dependencies…"):
+        still_missing = set()
+        for pip_name, import_name in missing:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+                importlib.import_module(import_name)
+            except Exception:
+                still_missing.add(pip_name)
+        return still_missing
 
 # ---------------------------------------------
 # Global CSS / Theme
@@ -690,39 +728,23 @@ if page == "datarecon":
             st.session_state["MISTRAL_API_KEY"] = mistral_key
             st.session_state["OPENAI_API_KEY"] = openai_key
 
-        # Dependency sanity checks (these are installed via requirements.txt)
-        missing = []
-        try:
-            import pandas as pd  # noqa
-        except Exception:
-            missing.append("pandas")
-        try:
-            from dateutil import parser as dparser  # noqa
-        except Exception:
-            missing.append("python-dateutil")
-        try:
-            from mistralai import Mistral  # noqa
-        except Exception:
-            missing.append("mistralai")
-        try:
-            import langextract as lx  # noqa
-        except Exception:
-            missing.append("langextract[openai]")
-        try:
-            import pypdfium2  # noqa
-        except Exception:
-            missing.append("pypdfium2")
-        try:
-            import pypdf  # noqa
-        except Exception:
-            missing.append("pypdf")
-        try:
-            from PIL import Image  # noqa
-        except Exception:
-            missing.append("pillow")
+        missing = ensure_runtime_dependencies(
+            (
+                ("pandas", "pandas"),
+                ("python-dateutil", "dateutil"),
+                ("mistralai", "mistralai"),
+                ("langextract[openai]", "langextract"),
+                ("pypdfium2", "pypdfium2"),
+                ("pypdf", "pypdf"),
+                ("pillow", "PIL"),
+            )
+        )
 
         if missing:
-            show_popup_error("Please install required packages before running: " + ", ".join(missing))
+            show_popup_error(
+                "Unable to install required packages automatically. "
+                "Please install before running: " + ", ".join(sorted(missing))
+            )
             st.stop()
 
         if not files:
