@@ -5,6 +5,9 @@
 # - API keys are entered by the user at runtime (not stored on disk)
 
 import os, re, json, base64
+import importlib
+import subprocess
+import sys
 from io import BytesIO
 from datetime import datetime
 
@@ -115,6 +118,41 @@ def show_popup_info(msg, *, title="Info"):
     </div>
     """, height=140, scrolling=False)
 
+
+def ensure_runtime_dependencies(dependency_spec):
+    """Attempt to import dependencies, installing them on-demand if missing.
+
+    Parameters
+    ----------
+    dependency_spec: Iterable[Tuple[str, str]]
+        Sequence of (pip_package, import_name) entries.
+
+    Returns
+    -------
+    Set[str]
+        Any package names that could not be imported after installation.
+    """
+
+    missing = []
+    for pip_name, import_name in dependency_spec:
+        try:
+            importlib.import_module(import_name)
+        except Exception:
+            missing.append((pip_name, import_name))
+
+    if not missing:
+        return set()
+
+    with st.spinner("Installing missing dependencies…"):
+        still_missing = set()
+        for pip_name, import_name in missing:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+                importlib.import_module(import_name)
+            except Exception:
+                still_missing.add(pip_name)
+        return still_missing
+
 # ---------------------------------------------
 # Global CSS / Theme
 # ---------------------------------------------
@@ -220,13 +258,21 @@ HERO_HTML = r"""
   const svg = document.getElementById('stackLogo');
   const NS = 'http://www.w3.org/2000/svg';
   const SIZE=24, SPEED=(2*Math.PI)/10, PITCH=0.30, GAP=0.06;
-  const SHIFT_X=0.20, SHIFT_Y=0.12;
-  const LAYER_SHIFT=[[0,0,0],[SHIFT_X,SHIFT_Y,0],[-SHIFT_X,-SHIFT_Y,0]];
+  const SHIFT_X=0.18, SHIFT_Y=0.11;
+  const LAYER_SHIFT=[
+    [2*SHIFT_X, 2*SHIFT_Y, 0],
+    [SHIFT_X, SHIFT_Y, 0],
+    [0, 0, 0],
+    [-SHIFT_X, -SHIFT_Y, 0],
+    [-2*SHIFT_X, -2*SHIFT_Y, 0]
+  ];
   const COS=Math.sqrt(3)/2, SIN=0.5;
   function rotX(p,a){const[x,y,z]=p,c=Math.cos(a),s=Math.sin(a);return [x,y*c-z*s,y*s+z*c];}
   function rotY(p,a){const[x,y,z]=p,c=Math.cos(a),s=Math.sin(a);return [x*c+z*s,y,-x*s+z*c];}
   function project(x,y,z){return[(x-y)*COS*SIZE,(x+y)*SIN*SIZE-z*SIZE];}
-  const grid=[-1.5,-0.5,0.5,1.5];
+  const GRID_X=[-1.5,-0.5,0.5,1.5];
+  const GRID_Y=GRID_X;
+  const GRID_Z=[-1.5,-0.9,-0.3,0.3,0.9,1.5];
   function insetQuad(q,axis){
     const cx=(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy=(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4, cz=(q[0][2]+q[1][2]+q[2][2]+q[3][2])/4;
     return q.map(([x,y,z])=>{
@@ -235,35 +281,64 @@ HERO_HTML = r"""
       return [x-dx*GAP,y-dy*GAP,z-dz*GAP];
     });
   }
-  function layerFromZ(zc){ if(zc<=-0.5) return 0; if(zc>=0.5) return 2; return 1; }
+  function layerFromZ(zc){
+    if(zc<-1.2) return 0;
+    if(zc<-0.6) return 1;
+    if(zc<0.6) return 2;
+    if(zc<1.2) return 3;
+    return 4;
+  }
   function buildFace(axis,value){
     const quads=[];
-    for(let i=0;i<3;i++){
-      for(let j=0;j<3;j++){
-        let p00,p10,p11,p01,zc;
-        if(axis==='x'){
-          p00=[value,grid[i],grid[j]];
-          p10=[value,grid[i+1],grid[j]];
-          p11=[value,grid[i+1],grid[j+1]];
-          p01=[value,grid[i],grid[j+1]];
-          zc=(grid[j]+grid[j+1])/2;
-        } else if(axis==='y'){
-          p00=[grid[i],value,grid[j]];
-          p10=[grid[i+1],value,grid[j]];
-          p11=[grid[i+1],value,grid[j+1]];
-          p01=[grid[i],value,grid[j+1]];
-          zc=(grid[j]+grid[j+1])/2;
-        } else {
-          p00=[grid[i],grid[j],value];
-          p10=[grid[i+1],grid[j],value];
-          p11=[grid[i+1],grid[j+1],value];
-          p01=[grid[i],grid[j+1],value];
-          zc=value;
+    if(axis==='x'){
+      for(let yi=0; yi<GRID_Y.length-1; yi++){
+        for(let zi=0; zi<GRID_Z.length-1; zi++){
+          const y0=GRID_Y[yi], y1=GRID_Y[yi+1];
+          const z0=GRID_Z[zi], z1=GRID_Z[zi+1];
+          const quad=insetQuad([
+            [value,y0,z0],
+            [value,y1,z0],
+            [value,y1,z1],
+            [value,y0,z1]
+          ],axis);
+          const el=document.createElementNS(NS,'polygon');
+          el.setAttribute('class','facelet');
+          quads.push({quad,el,layer:layerFromZ((z0+z1)/2)});
         }
-        const quad=insetQuad([p00,p10,p11,p01],axis);
+      }
+      return quads;
+    }
+    if(axis==='y'){
+      for(let xi=0; xi<GRID_X.length-1; xi++){
+        for(let zi=0; zi<GRID_Z.length-1; zi++){
+          const x0=GRID_X[xi], x1=GRID_X[xi+1];
+          const z0=GRID_Z[zi], z1=GRID_Z[zi+1];
+          const quad=insetQuad([
+            [x0,value,z0],
+            [x1,value,z0],
+            [x1,value,z1],
+            [x0,value,z1]
+          ],axis);
+          const el=document.createElementNS(NS,'polygon');
+          el.setAttribute('class','facelet');
+          quads.push({quad,el,layer:layerFromZ((z0+z1)/2)});
+        }
+      }
+      return quads;
+    }
+    for(let xi=0; xi<GRID_X.length-1; xi++){
+      for(let yi=0; yi<GRID_Y.length-1; yi++){
+        const x0=GRID_X[xi], x1=GRID_X[xi+1];
+        const y0=GRID_Y[yi], y1=GRID_Y[yi+1];
+        const quad=insetQuad([
+          [x0,y0,value],
+          [x1,y0,value],
+          [x1,y1,value],
+          [x0,y1,value]
+        ],axis);
         const el=document.createElementNS(NS,'polygon');
         el.setAttribute('class','facelet');
-        quads.push({quad,el,layer:layerFromZ(zc)});
+        quads.push({quad,el,layer:layerFromZ(value)});
       }
     }
     return quads;
@@ -690,39 +765,23 @@ if page == "datarecon":
             st.session_state["MISTRAL_API_KEY"] = mistral_key
             st.session_state["OPENAI_API_KEY"] = openai_key
 
-        # Dependency sanity checks (these are installed via requirements.txt)
-        missing = []
-        try:
-            import pandas as pd  # noqa
-        except Exception:
-            missing.append("pandas")
-        try:
-            from dateutil import parser as dparser  # noqa
-        except Exception:
-            missing.append("python-dateutil")
-        try:
-            from mistralai import Mistral  # noqa
-        except Exception:
-            missing.append("mistralai")
-        try:
-            import langextract as lx  # noqa
-        except Exception:
-            missing.append("langextract[openai]")
-        try:
-            import pypdfium2  # noqa
-        except Exception:
-            missing.append("pypdfium2")
-        try:
-            import pypdf  # noqa
-        except Exception:
-            missing.append("pypdf")
-        try:
-            from PIL import Image  # noqa
-        except Exception:
-            missing.append("pillow")
+        missing = ensure_runtime_dependencies(
+            (
+                ("pandas", "pandas"),
+                ("python-dateutil", "dateutil"),
+                ("mistralai", "mistralai"),
+                ("langextract[openai]", "langextract"),
+                ("pypdfium2", "pypdfium2"),
+                ("pypdf", "pypdf"),
+                ("pillow", "PIL"),
+            )
+        )
 
         if missing:
-            show_popup_error("Please install required packages before running: " + ", ".join(missing))
+            show_popup_error(
+                "Unable to install required packages automatically. "
+                "Please install before running: " + ", ".join(sorted(missing))
+            )
             st.stop()
 
         if not files:
